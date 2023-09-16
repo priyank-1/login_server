@@ -5,6 +5,8 @@ const User = require("./../models/User");
 
 const UserVerification = require("./../models/UserVerification");
 
+const PasswordReset = require("./../models/PasswordReset");
+
 const nodemailer = require("nodemailer");
 
 const { v4: uuidv4 } = require("uuid");
@@ -15,6 +17,7 @@ const bcrypt = require("bcrypt");
 
 //path for static verified page
 const path = require("path");
+const { log, error } = require("console");
 
 let transporter = nodemailer.createTransport({
   service: "gmail",
@@ -200,19 +203,19 @@ router.get("/verify/:userId/:uniqueString", (req, res) => {
               User.deleteOne({ _id: userId })
                 .then(() => {
                   let message = "Link has expired.Please sign up again!";
-                  res.redirect(`/user/verified/err=true&message=${message}`);
+                  res.redirect(`/user/verified?/err=true&message=${message}`);
                 })
                 .catch((err) => {
                   let message =
                     "Clearing user with expired unique string failed";
-                  res.redirect(`/user/verified/err=true&message=${message}`);
+                  res.redirect(`/user/verified?/err=true&message=${message}`);
                 });
             })
             .catch((err) => {
               console.log(err);
               let message =
                 "An error occurred while clearing expired user verification record";
-              res.redirect(`/user/verified/err=true&message=${message}`);
+              res.redirect(`/user/verified?/err=true&message=${message}`);
             });
         } else {
           // valid record exists so we validate the user string
@@ -235,7 +238,7 @@ router.get("/verify/:userId/:uniqueString", (req, res) => {
                         let message =
                           "An error occurred while finalizing successful verification.";
                         res.redirect(
-                          `/user/verified/err=true&message=${message}`
+                          `/user/verified?/err=true&message=${message}`
                         );
                       });
                   })
@@ -243,32 +246,32 @@ router.get("/verify/:userId/:uniqueString", (req, res) => {
                     console.log(err);
                     let message =
                       "An error occurred while updating user record to show verified.";
-                    res.redirect(`/user/verified/err=true&message=${message}`);
+                    res.redirect(`/user/verified?/err=true&message=${message}`);
                   });
               } else {
                 //existing record but incorrect verification details passed
                 let message =
                   "Invalid verification details passed.Check your inbox.";
-                res.redirect(`/user/verified/err=true&message=${message}`);
+                res.redirect(`/user/verified?/err=true&message=${message}`);
               }
             })
             .catch((err) => {
               let message = "An error occurred while comparing unique strings";
-              res.redirect(`/user/verified/err=true&message=${message}`);
+              res.redirect(`/user/verified?/err=true&message=${message}`);
             });
         }
       } else {
         //user verification record doesn't exists
         let message =
           "Account record doesn't exists or has been verified already. Please sign up or log in.";
-        res.redirect(`/user/verified/err=true&message=${message}`);
+        res.redirect(`/user/verified?/err=true&message=${message}`);
       }
     })
     .catch((err) => {
       console.log(err);
       let message =
         "An error occurred while checking for exisitng user verification record";
-      res.redirect(`/user/verified/err=true&message=${message}`);
+      res.redirect(`/user/verified?/err=true&message=${message}`);
     });
 });
 
@@ -294,12 +297,13 @@ router.post("/signin", (req, res) => {
           //User exists
 
           //check if user is verified
-          if (!data[0].verified) {
-            res.json({
-              status: "FAILED",
-              message: "Email hasn't been verified.Check your inbox.",
-            });
-          } else {
+          // if (!data[0].verified) {
+          //   res.json({
+          //     status: "FAILED",
+          //     message: "Email hasn't been verified.Check your inbox.",
+          //   });
+          // } 
+          // else {
             const hashedPassword = data[0].password;
             bcrypt
               .compare(password, hashedPassword)
@@ -323,7 +327,7 @@ router.post("/signin", (req, res) => {
                   message: "An error occurred while comparing passwords",
                 });
               });
-          }
+          // }
         } else {
           res.json({
             status: "FAILED",
@@ -339,5 +343,109 @@ router.post("/signin", (req, res) => {
       });
   }
 });
+
+
+router.post('/requestPasswordReset',(req,res) =>{
+  const {email,redirectUrl}=req.body;
+
+  User.find({email})
+  .then((data)=>{
+    if(data.length){
+      sendResetEmail(data[0],redirectUrl,res);
+       
+      // if(!data[0].verified)
+      // {
+      //   res.json({
+      //     status: "FAILED",
+      //     message: "Email Not verified",
+      //   });
+      // }
+      // else{
+        
+      // }
+    }
+    else{
+      res.json({
+        status: "FAILED",
+        message: "No account with the supplied email exists",
+      });
+    }
+  })
+  .catch(error =>{
+    console.log(error);
+    res.json({
+      status: "FAILED",
+      message: "An error occurred while checking for existing users",
+    });
+  })
+})
+
+const sendResetEmail = ({_id,email},redirectUrl,res)=>{
+  const resetString = uuidv4 + _id;
+  PasswordReset.deleteMany({userId:_id})
+  .then(result =>{
+
+    const mailOptions = {
+      from: process.env.AUTH_EMAIL,
+      to: email,
+      subject: "Password Reset",
+      html: `<p>Lost Password!</p><p>use this link to reset password , expires in 60 minutes</p>
+              <p>Press <a href=${
+                redirectUrl + "/" + _id + "/" + resetString
+              }>here</a> to procedd.</p>`,
+    };
+
+    const saltRounds = 10;
+    bcrypt.hash(resetString,saltRounds).
+    then(hashedResetString =>{
+      const newPasswordReset =new PasswordReset({
+        userId: _id,
+        resetString:hashedResetString,
+        creadtedAt: Date.now(),
+        expiresAt:Date.now() + 3600000
+      });
+
+      newPasswordReset.save()
+      .then(()=>{
+        transporter.sendMail(mailOptions)
+        .then(()=>{
+          res.json({
+            status: "PENDING",
+            message: "Password reset email sent",
+          });
+        })
+        .catch(err =>{
+          console.log(err);
+          res.json({
+            status: "FAILED",
+            message: "Password email reset failed",
+          });
+        })
+      })
+      .catch(error =>{
+        console.log(error);
+        res.json({
+          status: "FAILED",
+          message: "Couldnot reset password",
+        });
+      })
+    })
+    .catch(error =>{
+      console.log(error);
+      res.json({
+        status: "FAILED",
+        message: "Error occurred while hashing password",
+      });
+    })
+
+  })
+  .catch(error =>{
+    console.log(error);
+    res.json({
+      status: "FAILED",
+      message: "Clearing existing user records failed",
+    });
+  })
+}
 
 module.exports = router;
