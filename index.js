@@ -1,6 +1,8 @@
 //mongodb
 require('./config/db');
 
+const jwt = require('jsonwebtoken');
+
 const app = require('express')();
 const port = process.env.PORT || 3000;
 const UserRouter = require('./api/User');

@@ -1,7 +1,11 @@
 const express = require("express");
 const app = express();
 const router = express.Router();
+const jwt = require('jsonwebtoken');
+// const secretKey = "keyvalue";
 
+
+let refreshTokens = [];
 const User = require("./../models/User");
 
 const UserVerification = require("./../models/UserVerification");
@@ -19,6 +23,7 @@ const bcrypt = require("bcrypt");
 //path for static verified page
 const path = require("path");
 const { log, error } = require("console");
+const { constants } = require("buffer");
 
 let transporter = nodemailer.createTransport({
   service: "gmail",
@@ -36,6 +41,9 @@ transporter.verify((error, success) => {
     console.log(success);
   }
 });
+
+
+
 
 router.post("/signup", (req, res) => {
   let { name, email, password, dateOfBirth ,blogs} = req.body;
@@ -296,11 +304,26 @@ router.get("/verified", (req, res) => {
 
 });
 
+
+//generate access tokens
+
+const generateAccessToken  = (user) =>{
+ return jwt.sign({id:user.id},process.env.SECRET_KEY,{expiresIn : "15m"})
+          
+}
+
+
+const generateRefreshToken  = (user) =>{
+ return jwt.sign({id:user.id},process.env.SECRET_KEY_REFRESH,{expiresIn : "15m"});
+            
+}
+
 //signin
 router.post("/signin", (req, res) => {
   let { email, password } = req.body;
-  email = email.trim();
-  password = password.trim();
+  email = email?.trim();
+  password = password?.trim();
+
   if (email == "" || password == "") {
     res.json({
       status: "FAILED",
@@ -310,41 +333,55 @@ router.post("/signin", (req, res) => {
     User.find({ email })
       .then((data) => {
         if (data.length) {
-          //User exists
+          // User exists
+          const user = data[0];
+          if (user) {
+            const accessToken = generateAccessToken(user);
+            const refreshToken = generateRefreshToken(user);
+            refreshTokens.push(refreshToken);
 
-          //check if user is verified
-          if (!data[0].verified) {
+            // Send a single response
             res.json({
-              status: "FAILED",
-              message: "Email hasn't been verified.Check your inbox.",
+              id: user.id,
+              email: user.email,
+              status: "SUCCESSFUL",
+              accessToken,
+              refreshToken,
             });
-          } 
-          else {
-            const hashedPassword = data[0].password;
-            bcrypt
-              .compare(password, hashedPassword)
-              .then((result) => {
-                if (result) {
-                  res.json({
-                    status: "SUCCESS",
-                    message: "User Signed in successfully!",
-                    data: data,
-                  });
-                } else {
+          } else {
+            // Check if user is verified
+            if (!data[0].verified) {
+              // Send a single response
+              res.json({
+                status: "FAILED",
+                message: "Email hasn't been verified. Check your inbox.",
+              });
+            } else {
+              const hashedPassword = data[0].password;
+              bcrypt
+                .compare(password, hashedPassword)
+                .then((result) => {
+                  if (result) {
+                    // Successfully signed in
+                    // You can send additional response here if needed
+                  } else {
+                    // Send a single response
+                    res.json({
+                      status: "FAILED",
+                      message: "Invalid Password Entered",
+                    });
+                  }
+                })
+                .catch((err) => {
                   res.json({
                     status: "FAILED",
-                    message: "Invalid Password Entered",
+                    message: "An error occurred while comparing passwords",
                   });
-                }
-              })
-              .catch((err) => {
-                res.json({
-                  status: "FAILED",
-                  message: "An error occurred while comparing passwords",
                 });
-              });
+            }
           }
         } else {
+          // Send a single response
           res.json({
             status: "FAILED",
             message: "Invalid Credentials!",
@@ -352,6 +389,7 @@ router.post("/signin", (req, res) => {
         }
       })
       .catch((err) => {
+        // Send a single response
         res.json({
           status: "FAILED",
           message: "An error occurred while checking for existing users",
@@ -359,6 +397,7 @@ router.post("/signin", (req, res) => {
       });
   }
 });
+
 
 
 router.post('/requestPasswordReset',(req,res) =>{
@@ -463,5 +502,96 @@ const sendResetEmail = ({_id,email},redirectUrl,res)=>{
     });
   })
 }
+
+// router.post('/profile',verifytoken,(req,res)=>{
+    
+//       try{
+//         jwt.verify(req.token,secretKey,(err,authData)=>{
+//           if(err)
+//           {
+//             res.send({result:"Invalid Token"});
+//           }
+//           else{
+//             res.json({message:"profile accessed",
+//             authData
+//           })
+//           }
+//         })
+//       }catch(err){
+//         res.send({result:"Invalid Token"});
+
+// }    
+// });
+const verify = (req,res,next) =>{
+  const authHeader = req.headers.authorization;
+  if(authHeader){
+     const token = authHeader.split(" ")[1]; 
+     jwt.verify(token,process.env.SECRET_KEY,(err,user) =>{
+      if(err){
+        return res.status(403).json("Token is not Valid!");
+      }
+      req.user = user;
+      next();
+     })
+  }
+  else{
+    res.status(401).json("You are not authenticated!");
+  }
+}
+
+
+
+
+router.post("/refresh",(req,res)=>{
+    //take refresh token from the user
+    const refreshToken = req.body.token;
+
+    //send error if there is no token or it's invalid
+    if(!refreshToken) {
+      return res.status(401).json("You are not authenticated!")
+    }
+    if(!refreshTokens.includes(refreshToken)){
+       return res.status(403).json("Refresh Token is not valid!");
+    }
+
+    jwt.verify(refreshToken,process.env.SECRET_KEY_REFRESH,(err,user)=>{
+      err && console.log(err);
+
+      refreshTokens = refreshTokens.filter((token)=> token !== refreshToken);
+
+      const newAccessToken = generateAccessToken(user);
+      const newRefreshToken = generateRefreshToken(user);
+      refreshTokens.push(newRefreshToken);
+
+      res.status(200).json({
+        accessToken: newAccessToken ,
+        refreshToken : newRefreshToken,
+      })
+
+    });
+
+    //if everything is ok , create new access token , refresh token and send to user
+})
+
+router.delete("/del/:id",verify,async (req,res)=>{
+  
+  try {
+    if (req.user.id === req.params.id) {
+      const deletedUser = await User.findOneAndDelete({ _id: req.params.id });
+      if (deletedUser) {
+        // User was found and deleted successfully
+        res.status(200).json({ message: "User has been deleted" });
+      } else {
+        // User was not found
+        res.status(404).json({ message: "User not found" });
+      }
+    } else {
+      res.status(200).json("User Not deleted");
+    }
+  } catch (err) {
+    // Handle any errors that occur during the deletion
+    res.status(500).json({ message: "User deletion failed" });
+  }
+})
 
 module.exports = router;
